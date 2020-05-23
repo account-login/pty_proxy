@@ -15,11 +15,15 @@ static const char *_get_process_name(char *buf, size_t bufsize) {
     if (len < 0) {
         return "__CAN_NOT_READ_PROC_SELF_EXE__";
     }
+    if ((size_t)len >= bufsize) {
+        len = bufsize - 1;
+    }
+    buf[len] = '\0';
     return ::basename(buf);
 }
 
 
-static char g_proc_name[1024 * 4];
+static char g_proc_name[1024 * 4] = {};
 
 
 static const char *get_process_name() {
