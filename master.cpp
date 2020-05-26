@@ -95,7 +95,7 @@ int main(int argc, char *const *argv) {
             (void)close(child_w);
         }
         (void)execvp(slave_cmd_argv[0], slave_cmd_argv);
-        log_err(errno, "execv()");
+        log_err(errno, "execvp()");
         return -1;
     }
 

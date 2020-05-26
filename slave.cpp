@@ -74,7 +74,7 @@ int main(int argc, char *const *argv) {
     if (ctx.pid == 0) {
         // child
         (void)execvp(cmd_argv[0], cmd_argv);
-        log_err(errno, "exec()");
+        log_err(errno, "execvp()");
         return -1;
     }
 
