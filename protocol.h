@@ -4,11 +4,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <termios.h>
+#include <sys/ioctl.h>
 
 #define CMD_DATA 0
 #define CMD_WS 1
 #define FRAME_HEADER_SIZE 4
 #define MAX_FRAME_SIZE 4096
+
 
 const size_t k_input_buf_size = MAX_FRAME_SIZE * 4;
 const size_t k_base64_input_buf_size = MAX_FRAME_SIZE * 6;

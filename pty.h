@@ -1,7 +1,9 @@
 #pragma once
 
 // system
-#define _XOPEN_SOURCE 600
+#if !defined(_XOPEN_SOURCE) || _XOPEN_SOURCE < 600
+#   define _XOPEN_SOURCE 600
+#endif
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
