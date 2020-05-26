@@ -22,6 +22,15 @@ struct Parser {
     const uint8_t *payload = NULL;
 };
 
-int send_ws(int fd, const struct winsize &ws);
-int send_data(int fd, const char *buf, size_t len);
-int feed_frame(Parser &p, int fd, int cb(Parser &p, void *user), void *user);
+struct Stream {
+    int rfd = -1;
+    int wfd = -1;
+    int base64 = 0;
+};
+
+ssize_t stream_read(Stream *s, void *buf, size_t bufsize);
+ssize_t stream_write(Stream *s, const void *buf, size_t bufsize);
+
+int send_ws(Stream *s, const struct winsize &ws);
+int send_data(Stream *s, const char *buf, size_t len);
+int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user);

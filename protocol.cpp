@@ -8,7 +8,21 @@
 #include "util.h"
 
 
-int send_ws(int fd, const struct winsize &ws) {
+ssize_t stream_read(Stream *s, void *buf, size_t bufsize) {
+    if (!s->base64) {
+        return TEMP_FAILURE_RETRY(read(s->rfd, buf, bufsize));
+    }
+    return -1;
+}
+
+ssize_t stream_write(Stream *s, const void *buf, size_t bufsize) {
+    if (!s->base64) {
+        return TEMP_FAILURE_RETRY(write(s->wfd, buf, bufsize));
+    }
+    return -1;
+}
+
+int send_ws(Stream *s, const struct winsize &ws) {
     log_dbg("[send_ws] [row:%u][col:%u]", ws.ws_row, ws.ws_col);
 
     char buf[4 + 4];
@@ -21,14 +35,14 @@ int send_ws(int fd, const struct winsize &ws) {
     buf[6] = (uint8_t)ws.ws_col;
     buf[7] = (uint8_t)(ws.ws_col >> 8);
 
-    if (TEMP_FAILURE_RETRY(write(fd, buf, sizeof(buf))) != sizeof(buf)) {
+    if (stream_write(s, buf, sizeof(buf)) != sizeof(buf)) {
         log_err(errno, "send_ws()");
         return -1;
     }
     return 0;
 }
 
-int send_data(int fd, const char *buf, size_t len) {
+int send_data(Stream *s, const char *buf, size_t len) {
     assert(0 < len && len + FRAME_HEADER_SIZE <= MAX_FRAME_SIZE);
     log_dbg("[send_data] [len:%zu]", len);
 
@@ -39,18 +53,18 @@ int send_data(int fd, const char *buf, size_t len) {
     head[3] = 0;
 
     size_t write_len = FRAME_HEADER_SIZE + len;
-    if (TEMP_FAILURE_RETRY(write(fd, head, write_len)) != (ssize_t)write_len) {
+    if (stream_write(s, head, write_len) != (ssize_t)write_len) {
         log_err(errno, "send_data()");
         return -1;
     }
     return 0;
 }
 
-int feed_frame(Parser &p, int fd, int cb(Parser &p, void *user), void *user) {
+int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user) {
     assert(!p.eof);
-    log_dbg("[free_frame] called");
+    log_dbg("[feed_frame] called");
 
-    ssize_t nread = TEMP_FAILURE_RETRY(read(fd, &p.input_buf[p.buf_pos], k_input_buf_size - p.buf_pos));
+    ssize_t nread = stream_read(s, &p.input_buf[p.buf_pos], k_input_buf_size - p.buf_pos);
     if (nread < 0) {
         log_err(errno, "feed_frame() read(fd)");
         return -1;

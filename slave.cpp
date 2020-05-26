@@ -1,6 +1,7 @@
 // system
 #include <string.h>
 #include <signal.h>
+#include <getopt.h>
 #include <sys/select.h>
 #include <sys/types.h>
 // proj
@@ -48,6 +49,20 @@ static int frame_cb(Parser &p, void *user) {
 
 
 int main(int argc, char *const *argv) {
+    // parse args
+    int arg_base64 = 0;
+    struct option long_options[] = {
+        /* These options set a flag. */
+        {"base64", no_argument, &arg_base64, 1},
+        {0, 0, 0, 0}
+    };
+
+    int option_index = -1;
+    while (-1 != getopt_long(argc, argv, "", long_options, &option_index)) {}
+    char *const cmd_argv_default[] = {(char *)"/bin/sh", NULL};
+    char *const *cmd_argv = argc > optind ? &argv[optind] : cmd_argv_default;
+
+    // fork
     Context ctx;
     std::string slave_name;
     int err = pty_fork(ctx.pid, ctx.pty_fd, slave_name, NULL, NULL);
@@ -58,14 +73,15 @@ int main(int argc, char *const *argv) {
 
     if (ctx.pid == 0) {
         // child
-        if (argc > 1) {
-            (void)execvp(argv[1], argv + 1);
-        } else {
-            (void)execl("/bin/sh", "/bin/sh", NULL);
-        }
+        (void)execvp(cmd_argv[0], cmd_argv);
         log_err(errno, "exec()");
         return -1;
     }
+
+    Stream s;
+    s.rfd = STDIN_FILENO;
+    s.wfd = STDOUT_FILENO;
+    s.base64 = arg_base64;
 
     // parent
     Parser p;
@@ -82,7 +98,7 @@ int main(int argc, char *const *argv) {
 
         // stdin --> pty
         if (FD_ISSET(STDIN_FILENO, &fds)) {
-            if (0 != feed_frame(p, STDIN_FILENO, frame_cb, &ctx)) {
+            if (0 != feed_frame(p, &s, frame_cb, &ctx)) {
                 return -1;
             }
         }
@@ -101,7 +117,7 @@ int main(int argc, char *const *argv) {
                 break;
             }
 
-            if (0 != send_data(STDOUT_FILENO, buf, nread)) {
+            if (0 != send_data(&s, buf, nread)) {
                 return -1;
             }
         }

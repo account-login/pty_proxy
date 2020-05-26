@@ -2,6 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <getopt.h>
 #include <sys/select.h>
 // proj
 #include "pty.h"
@@ -36,9 +37,20 @@ static int frame_cb(Parser &p, void *user) {
 }
 
 int main(int argc, char *const *argv) {
-    // check argv
-    if (argc <= 1) {
-        log_err(0, "usage: pty_proxy_master SLAVE_CMD ARGS...");
+    // parse args
+    int arg_base64 = 0;
+    struct option long_options[] = {
+        /* These options set a flag. */
+        {"base64", no_argument, &arg_base64, 1},
+        {0, 0, 0, 0}
+    };
+
+    int option_index = -1;
+    while (-1 != getopt_long(argc, argv, "", long_options, &option_index)) {}
+    int slave_cmd_argc = argc - optind;
+    char *const *slave_cmd_argv = &argv[optind];
+    if (slave_cmd_argc < 1) {
+        log_err(0, "usage: pty_proxy_master [--base64] -- SLAVE_CMD ARGS...");
         return 1;
     }
 
@@ -82,7 +94,7 @@ int main(int argc, char *const *argv) {
         if (child_w > STDERR_FILENO) {
             (void)close(child_w);
         }
-        (void)execv(argv[1], argv + 1);
+        (void)execv(slave_cmd_argv[0], slave_cmd_argv);
         log_err(errno, "execv()");
         return -1;
     }
@@ -107,6 +119,11 @@ int main(int argc, char *const *argv) {
         return -1;
     }
 
+    Stream s;
+    s.rfd = parent_r;
+    s.wfd = parent_w;
+    s.base64 = arg_base64;
+
     Parser p;
     while (!p.eof) {
         // sigwinch
@@ -117,7 +134,7 @@ int main(int argc, char *const *argv) {
                 log_err(errno, "ioctl(STDIN_FILENO, TIOCGWINSZ, &ws)");
                 return -1;
             }
-            if (0 != send_ws(parent_w, ws)) {
+            if (0 != send_ws(&s, ws)) {
                 return -1;
             }
         }
@@ -151,14 +168,14 @@ int main(int argc, char *const *argv) {
                 break;
             }
 
-            if (0 != send_data(parent_w, buf, nread)) {
+            if (0 != send_data(&s, buf, nread)) {
                 return -1;
             }
         }
 
         // child --> stdout
         if (FD_ISSET(parent_r, &fds)) {
-            if (0 != feed_frame(p, parent_r, frame_cb, NULL)) {
+            if (0 != feed_frame(p, &s, frame_cb, NULL)) {
                 return -1;
             }
         }
