@@ -5,21 +5,67 @@
 #include <errno.h>
 // self
 #include "protocol.h"
+#include "base64.h"
 #include "util.h"
 
 
 ssize_t stream_read(Stream *s, void *buf, size_t bufsize) {
+    assert(bufsize > 0);
     if (!s->base64) {
         return TEMP_FAILURE_RETRY(read(s->rfd, buf, bufsize));
     }
-    return -1;
+
+    assert(s->buflen < sizeof(s->rbuf));
+    size_t read_limit = sizeof(s->rbuf) - s->buflen;
+    if (read_limit > bufsize + bufsize / 3) {
+        read_limit = bufsize + bufsize / 3;
+    }
+    ssize_t raw_read = TEMP_FAILURE_RETRY(read(s->rfd, &s->rbuf[s->buflen], read_limit));
+    if (raw_read <= 0) {
+        return raw_read;
+    }
+    s->buflen += (size_t)raw_read;
+    assert(s->buflen <= sizeof(s->rbuf));
+
+    size_t insize = s->buflen;
+    size_t outsize = bufsize;
+    if (0 != b64_decode(s->rbuf, &insize, (uint8_t *)buf, &outsize)) {
+        return -1;
+    }
+    assert(insize <= s->buflen && outsize <= bufsize);
+    memmove(s->rbuf, &s->rbuf[insize], s->buflen - insize);
+    s->buflen -= insize;
+
+    return (ssize_t)outsize;
 }
 
 ssize_t stream_write(Stream *s, const void *buf, size_t bufsize) {
+    assert(bufsize > 0);
     if (!s->base64) {
         return TEMP_FAILURE_RETRY(write(s->wfd, buf, bufsize));
     }
-    return -1;
+
+    const size_t k_max_stream_write = k_input_buf_size;
+    assert(b64_encoded_size(k_max_stream_write) <= sizeof(s->wbuf));
+
+    const uint8_t *input_buf = (const uint8_t *)buf;
+    for (size_t remain = bufsize; remain > 0; ) {
+        size_t block_size = remain > k_max_stream_write ? k_max_stream_write : remain;
+        size_t outsize = b64_encoded_size(block_size);
+        b64_encode(input_buf, block_size, s->wbuf);
+        ssize_t raw_write = TEMP_FAILURE_RETRY(write(s->wfd, s->wbuf, outsize));
+        if (raw_write < 0) {
+            return raw_write;
+        }
+        if (raw_write < (ssize_t)block_size) {
+            log_err(0, "[stream_write] short write [raw_write:%zd] < [block_size:%zu]", raw_write, block_size);
+            return -1;
+        }
+
+        input_buf += block_size;
+        remain -= block_size;
+    }
+    return (ssize_t)bufsize;
 }
 
 int send_ws(Stream *s, const struct winsize &ws) {

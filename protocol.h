@@ -2,6 +2,7 @@
 
 // system
 #include <stdint.h>
+#include <stddef.h>
 #include <termios.h>
 
 #define CMD_DATA 0
@@ -10,6 +11,8 @@
 #define MAX_FRAME_SIZE 4096
 
 const size_t k_input_buf_size = MAX_FRAME_SIZE * 4;
+const size_t k_base64_input_buf_size = MAX_FRAME_SIZE * 6;
+const size_t k_base64_output_buf_size = MAX_FRAME_SIZE * 6;
 
 struct Parser {
     // private
@@ -23,9 +26,14 @@ struct Parser {
 };
 
 struct Stream {
+    // params
     int rfd = -1;
     int wfd = -1;
     int base64 = 0;
+    // private
+    size_t buflen = 0;
+    uint8_t rbuf[k_base64_input_buf_size];
+    uint8_t wbuf[k_base64_output_buf_size];
 };
 
 ssize_t stream_read(Stream *s, void *buf, size_t bufsize);

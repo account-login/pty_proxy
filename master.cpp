@@ -94,7 +94,7 @@ int main(int argc, char *const *argv) {
         if (child_w > STDERR_FILENO) {
             (void)close(child_w);
         }
-        (void)execv(slave_cmd_argv[0], slave_cmd_argv);
+        (void)execvp(slave_cmd_argv[0], slave_cmd_argv);
         log_err(errno, "execv()");
         return -1;
     }
