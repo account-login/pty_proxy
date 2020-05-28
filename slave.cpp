@@ -51,9 +51,11 @@ static int frame_cb(Parser &p, void *user) {
 int main(int argc, char *const *argv) {
     // parse args
     int arg_base64 = 0;
+    int arg_greeting = 0;
     struct option long_options[] = {
         /* These options set a flag. */
         {"base64", no_argument, &arg_base64, 1},
+        {"greeting", no_argument, &arg_greeting, 1},
         {0, 0, 0, 0}
     };
 
@@ -78,12 +80,22 @@ int main(int argc, char *const *argv) {
         return -1;
     }
 
+    // parent
+    if (isatty(STDIN_FILENO)) {
+        // prevent echoing
+        (void)tty_set_raw(STDIN_FILENO, NULL);
+    }
+    // ready to accept input and produce output
+    if (arg_greeting) {
+        const char *k_greeting = "PTY_SLAVE_GREETING";
+        (void)write(STDOUT_FILENO, k_greeting, strlen(k_greeting));
+    }
+
     Stream s;
     s.rfd = STDIN_FILENO;
     s.wfd = STDOUT_FILENO;
     s.base64 = arg_base64;
 
-    // parent
     Parser p;
     while (!p.eof) {
         fd_set fds;
