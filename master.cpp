@@ -3,11 +3,21 @@
 #include <unistd.h>
 #include <signal.h>
 #include <getopt.h>
-#include <sys/select.h>
+#include <pthread.h>
 // proj
 #include "pty.h"
 #include "util.h"
 #include "protocol.h"
+
+
+struct Context {
+    pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+    int exit_flag = 0;
+    int l2r = 0;
+    int r2l = 0;
+    Stream stream;
+};
 
 
 volatile static sig_atomic_t g_winch = 1;
@@ -34,6 +44,86 @@ static int frame_cb(Parser &p, void *user) {
         return -1;
     }
     return 0;
+}
+
+// stdin --> child
+static void *l2r(void *user) {
+    Context &ctx = *(Context *)user;
+    int ret = 0;
+
+    // unblock sigwinch for me
+    sigset_t sigset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGWINCH);
+    if (0 != pthread_sigmask(SIG_UNBLOCK, &sigset, NULL)) {
+        log_err(errno, "pthread_sigmask(SIG_UNBLOCK, &sigset, NULL)");
+    }
+    // setup sigwich
+    struct sigaction sa = {};
+    sa.sa_handler = &set_winch;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    (void)sigaction(SIGWINCH, &sa, NULL);
+
+    while (1) {
+        // sigwinch
+        if (g_winch) {
+            g_winch = 0;
+            struct winsize ws = {};
+            if (0 != (ret = ioctl(STDIN_FILENO, TIOCGWINSZ, &ws))) {
+                log_err(errno, "ioctl(STDIN_FILENO, TIOCGWINSZ, &ws)");
+                break;
+            }
+            if (0 != (ret = send_ws(&ctx.stream, ws))) {
+                break;
+            }
+        }
+
+        char bufstore[MAX_FRAME_SIZE];
+        const size_t k_buf_size = MAX_FRAME_SIZE - FRAME_HEADER_SIZE;
+        char *buf = &bufstore[FRAME_HEADER_SIZE];
+
+        ssize_t nread = read(STDIN_FILENO, buf, k_buf_size);
+        if (nread < 0) {
+            if (errno == EINTR) {
+                log_dbg("got EINTR, winch: %d", g_winch);
+                continue;   // maybe sigwinch
+            }
+
+            log_err(errno, "read(STDIN_FILENO)");
+            ret = -1;
+            break;
+        }
+        if (nread == 0) {
+            break;
+        }
+
+        if (0 != (ret = send_data(&ctx.stream, buf, nread))) {
+            break;
+        }
+    }
+
+    pthread_mutex_lock(&ctx.mu);
+    ctx.exit_flag |= 1;
+    ctx.l2r = ret;
+    pthread_cond_signal(&ctx.cond);
+    pthread_mutex_unlock(&ctx.mu);
+    return NULL;
+}
+
+// child --> stdout
+static void *r2l(void *user) {
+    Context &ctx = *(Context *)user;
+    int ret = 0;
+    Parser p;
+    while (!p.eof && 0 == (ret = feed_frame(p, &ctx.stream, frame_cb, NULL))) {}
+
+    pthread_mutex_lock(&ctx.mu);
+    ctx.exit_flag |= 2;
+    ctx.r2l = ret;
+    pthread_cond_signal(&ctx.cond);
+    pthread_mutex_unlock(&ctx.mu);
+    return NULL;
 }
 
 int main(int argc, char *const *argv) {
@@ -103,8 +193,14 @@ int main(int argc, char *const *argv) {
     (void)close(child_r);
     (void)close(child_w);
 
-    // setup sigwinch
-    (void)signal(SIGWINCH, &set_winch);
+    // block sigwinch for all threads
+    sigset_t sigset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGWINCH);
+    if (0 != pthread_sigmask(SIG_BLOCK, &sigset, NULL)) {
+        log_err(errno, "pthread_sigmask(SIG_BLOCK, &sigset, NULL)");
+        return -1;
+    }
 
     // reset tty on exit
     if (atexit(tty_reset) != 0) {
@@ -119,67 +215,36 @@ int main(int argc, char *const *argv) {
         return -1;
     }
 
-    Stream s;
-    s.rfd = parent_r;
-    s.wfd = parent_w;
-    s.base64 = arg_base64;
+    // init ctx
+    Context ctx;
+    ctx.stream.rfd = parent_r;
+    ctx.stream.wfd = parent_w;
+    ctx.stream.base64 = arg_base64;
 
-    Parser p;
-    while (!p.eof) {
-        // sigwinch
-        if (g_winch) {
-            g_winch = 0;
-            struct winsize ws = {};
-            if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) < 0) {
-                log_err(errno, "ioctl(STDIN_FILENO, TIOCGWINSZ, &ws)");
-                return -1;
-            }
-            if (0 != send_ws(&s, ws)) {
-                return -1;
-            }
-        }
+    // start threads
+    pthread_attr_t attr;
+    if (0 != pthread_attr_init(&attr)) {
+        log_err(errno, "pthread_attr_init()");
+        return -1;
+    }
+    (void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t thread_l2r;
+    pthread_t thread_r2l;
+    if (0 != pthread_create(&thread_l2r, &attr, &l2r, &ctx)) {
+        log_err(errno, "pthread_create(&thread_l2r, &attr, &l2r, &ctx)");
+        return -1;
+    }
+    if (0 != pthread_create(&thread_r2l, &attr, &r2l, &ctx)) {
+        log_err(errno, "pthread_create(&thread_r2l, &attr, &r2l, &ctx)");
+        return -1;
+    }
 
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(STDIN_FILENO, &fds);
-        FD_SET(parent_r, &fds);
-
-        if (select(parent_r + 1, &fds, NULL, NULL, NULL) == -1) {
-            if (errno != EINTR) {
-                log_err(errno, "select()");
-                return -1;
-            }
-            // else may be sigwinch
-            FD_ZERO(&fds);
-        }
-
-        // stdin --> child
-        if (FD_ISSET(STDIN_FILENO, &fds)) {
-            char bufstore[MAX_FRAME_SIZE];
-            const size_t k_buf_size = MAX_FRAME_SIZE - FRAME_HEADER_SIZE;
-            char *buf = &bufstore[FRAME_HEADER_SIZE];
-
-            ssize_t nread = TEMP_FAILURE_RETRY(read(STDIN_FILENO, buf, k_buf_size));
-            if (nread < 0) {
-                log_err(errno, "read(STDIN_FILENO)");
-                return -1;
-            }
-            if (nread == 0) {
-                break;
-            }
-
-            if (0 != send_data(&s, buf, nread)) {
-                return -1;
-            }
-        }
-
-        // child --> stdout
-        if (FD_ISSET(parent_r, &fds)) {
-            if (0 != feed_frame(p, &s, frame_cb, NULL)) {
-                return -1;
-            }
-        }
-    }   // while (true)
-
-    return 0;
+    // wait for threads
+    pthread_mutex_lock(&ctx.mu);
+    while (!ctx.exit_flag) {
+        pthread_cond_wait(&ctx.cond, &ctx.mu);
+    }
+    log_dbg("[exit_flag:%d] [l2r:%d][r2l:%d]", ctx.exit_flag, ctx.l2r, ctx.r2l);
+    pthread_mutex_unlock(&ctx.mu);
+    return ctx.l2r ? ctx.l2r : ctx.r2l;
 }
