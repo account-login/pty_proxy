@@ -16,6 +16,7 @@ struct Context {
     int exit_flag = 0;
     int l2r = 0;
     int r2l = 0;
+    int msg_eof = 0;
     Stream stream;
 };
 
@@ -33,12 +34,16 @@ static void set_winch(int) {
 }
 
 static int frame_cb(Parser &p, void *user) {
-    (void)user;
+    Context &ctx = *(Context *)user;
     if (p.cmd == CMD_DATA) {
         if (TEMP_FAILURE_RETRY(write(STDOUT_FILENO, p.payload, p.size)) != (ssize_t)p.size) {
             log_err(errno, "write(STDOUT_FILENO, p.payload, p.size)");
             return -1;
         }
+    } else if (p.cmd == CMD_EOF) {
+        log_dbg("[frame_cb] EOF msg received");
+        ctx.msg_eof = 1;
+        return 0;
     } else {
         log_err(0, "Unknown cmd: %u", p.cmd);
         return -1;
@@ -116,7 +121,7 @@ static void *r2l(void *user) {
     Context &ctx = *(Context *)user;
     int ret = 0;
     Parser p;
-    while (!p.eof && 0 == (ret = feed_frame(p, &ctx.stream, frame_cb, NULL))) {}
+    while (!p.eof && !ctx.msg_eof && 0 == (ret = feed_frame(p, &ctx.stream, frame_cb, &ctx))) {}
 
     pthread_mutex_lock(&ctx.mu);
     ctx.exit_flag |= 2;

@@ -8,6 +8,7 @@
 
 #define CMD_DATA 0
 #define CMD_WS 1
+#define CMD_EOF 2
 #define FRAME_HEADER_SIZE 4
 #define MAX_FRAME_SIZE 4096
 
@@ -43,4 +44,5 @@ ssize_t stream_write(Stream *s, const void *buf, size_t bufsize);
 
 int send_ws(Stream *s, const struct winsize &ws);
 int send_data(Stream *s, const char *buf, size_t len);
+int send_eof(Stream *s);
 int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user);

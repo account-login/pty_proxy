@@ -110,6 +110,20 @@ int send_data(Stream *s, const char *buf, size_t len) {
     return 0;
 }
 
+int send_eof(Stream *s) {
+    char buf[4];
+    buf[0] = 0;
+    buf[1] = 0;
+    buf[2] = CMD_EOF;
+    buf[3] = g_send_seq++;
+
+    if (stream_write(s, buf, sizeof(buf)) != sizeof(buf)) {
+        log_err(errno, "send_eof()");
+        return -1;
+    }
+    return 0;
+}
+
 int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user) {
     assert(!p.eof);
     log_dbg("[feed_frame] called");

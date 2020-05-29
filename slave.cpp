@@ -90,6 +90,9 @@ static void *r2l(void *user) {
         }
     }
 
+    // eof
+    (void)send_eof(&ctx.stream);
+
     pthread_mutex_lock(&ctx.mu);
     ctx.exit_flag |= 2;
     ctx.r2l = ret;
