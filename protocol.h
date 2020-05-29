@@ -19,7 +19,7 @@ const size_t k_base64_output_buf_size = MAX_FRAME_SIZE * 6;
 struct Parser {
     // private
     uint8_t input_buf[k_input_buf_size];
-    size_t buf_pos = 0;
+    size_t buf_len = 0;
     // output
     uint8_t eof = 0;
     uint8_t cmd = 0;

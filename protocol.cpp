@@ -69,6 +69,9 @@ ssize_t stream_write(Stream *s, const void *buf, size_t bufsize) {
     return (ssize_t)bufsize;
 }
 
+static uint8_t g_send_seq = 0;
+static uint8_t g_recv_seq = 0;
+
 int send_ws(Stream *s, const struct winsize &ws) {
     log_dbg("[send_ws] [row:%u][col:%u]", ws.ws_row, ws.ws_col);
 
@@ -76,7 +79,7 @@ int send_ws(Stream *s, const struct winsize &ws) {
     buf[0] = 4;
     buf[1] = 0;
     buf[2] = CMD_WS;
-    buf[3] = 0;
+    buf[3] = g_send_seq++;
     buf[4] = (uint8_t)ws.ws_row;
     buf[5] = (uint8_t)(ws.ws_row >> 8);
     buf[6] = (uint8_t)ws.ws_col;
@@ -91,13 +94,13 @@ int send_ws(Stream *s, const struct winsize &ws) {
 
 int send_data(Stream *s, const char *buf, size_t len) {
     assert(0 < len && len + FRAME_HEADER_SIZE <= MAX_FRAME_SIZE);
-    log_dbg("[send_data] [len:%zu]", len);
+    log_dbg("[send_data] [seq:%u][len:%zu]", g_send_seq, len);
 
     char *head = (char *)(buf - FRAME_HEADER_SIZE);
     head[0] = (uint8_t)(len & 0xff);
     head[1] = (uint8_t)(len >> 8);
     head[2] = CMD_DATA;
-    head[3] = 0;
+    head[3] = g_send_seq++;
 
     size_t write_len = FRAME_HEADER_SIZE + len;
     if (stream_write(s, head, write_len) != (ssize_t)write_len) {
@@ -111,7 +114,7 @@ int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user) 
     assert(!p.eof);
     log_dbg("[feed_frame] called");
 
-    ssize_t nread = stream_read(s, &p.input_buf[p.buf_pos], k_input_buf_size - p.buf_pos);
+    ssize_t nread = stream_read(s, &p.input_buf[p.buf_len], k_input_buf_size - p.buf_len);
     if (nread < 0) {
         log_err(errno, "feed_frame() read(fd)");
         return -1;
@@ -122,28 +125,34 @@ int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user) 
     }
 
     // parse each frame
-    size_t buf_end = p.buf_pos + (size_t)nread;
-    while (p.buf_pos < buf_end) {
-        if (p.buf_pos + FRAME_HEADER_SIZE > buf_end) {
+    size_t buf_end = p.buf_len + (size_t)nread;
+    size_t buf_pos = 0;
+    while (buf_pos < buf_end) {
+        if (buf_pos + FRAME_HEADER_SIZE > buf_end) {
             log_dbg("[feed_frame] not enough header [nread:%zd]", nread);
             break;
         }
-        const uint8_t *data = &p.input_buf[p.buf_pos];
+        const uint8_t *data = &p.input_buf[buf_pos];
         size_t size = (size_t)data[0] | ((size_t)data[1] << 8);
         uint8_t cmd = data[2];
-        (void)data[3];
+        uint8_t seq = data[3];
         const uint8_t *payload = data + FRAME_HEADER_SIZE;
         if (FRAME_HEADER_SIZE + size > MAX_FRAME_SIZE) {
-            log_err(0, "[feed_frame] frame too large [size:%zu][cmd:%u] [remain:%zu]", size, cmd, buf_end - p.buf_pos);
+            log_err(0, "[feed_frame] frame too large [seq:%u][size:%zu][cmd:%u] [pos:%zu]", seq, size, cmd, buf_pos);
             return -1;
         }
-        if (p.buf_pos + FRAME_HEADER_SIZE + size > buf_end) {
-            log_dbg("[feed_frame] not enough payload [nread:%zd] [cmd:%u][size:%zu]", nread, cmd, size);
+        if (buf_pos + FRAME_HEADER_SIZE + size > buf_end) {
+            log_dbg("[feed_frame] not enough payload [nread:%zd] [seq:%u][cmd:%u][size:%zu] [pos:%zu][end:%zu]",
+                nread, seq, cmd, size, buf_pos, buf_end);
             break;
+        }
+        if (seq != g_recv_seq++) {
+            log_err(0, "[feed_frame] [seq:%u] != [expected:%u] [size:%zu][cmd:%u] [pos:%zu]", seq, g_recv_seq - 1, size, cmd, buf_pos);
+            return -1;
         }
 
         // output
-        log_dbg("[feed_frame] [size:%zu][cmd:%u] [pos:%zu]", size, cmd, p.buf_pos);
+        log_dbg("[feed_frame] [seq:%u][size:%zu][cmd:%u] [pos:%zu]", seq, size, cmd, buf_pos);
         p.size = size;
         p.cmd = cmd;
         p.payload = payload;
@@ -153,13 +162,13 @@ int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user) 
         }
 
         // next
-        p.buf_pos += FRAME_HEADER_SIZE + size;
+        buf_pos += FRAME_HEADER_SIZE + size;
     }
 
     // move incomplete frame
-    if (p.buf_pos < buf_end) {
-        memmove(p.input_buf, p.input_buf + p.buf_pos, buf_end - p.buf_pos);
+    if (buf_pos < buf_end) {
+        memmove(p.input_buf, p.input_buf + buf_pos, buf_end - buf_pos);
     }
-    p.buf_pos = buf_end - p.buf_pos;
+    p.buf_len = buf_end - buf_pos;
     return 0;
 }
