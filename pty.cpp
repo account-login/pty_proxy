@@ -89,7 +89,7 @@ int pty_fork(
     slave_fd = open(slave_name.c_str(), O_RDWR);
     if (slave_fd == -1) {
         err = errno;
-        log_err(err, "open(slave_name)");
+        log_err(err, "open(slave_name): %s", slave_name.c_str());
         goto L_RETURN;
     }
 
