@@ -2,8 +2,7 @@
 #include <string.h>
 #include <signal.h>
 #include <getopt.h>
-#include <sys/select.h>
-#include <sys/types.h>
+#include <pthread.h>
 // proj
 #include "pty.h"
 #include "protocol.h"
@@ -13,6 +12,12 @@
 struct Context {
     pid_t pid = -1;
     int pty_fd = -1;
+    pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+    int exit_flag = 0;
+    int l2r = 0;
+    int r2l = 0;
+    Stream stream;
 };
 
 
@@ -47,6 +52,51 @@ static int frame_cb(Parser &p, void *user) {
     return 0;
 }
 
+// stdin --> pty
+static void *l2r(void *user) {
+    Context &ctx = *(Context *)user;
+    Parser p;
+    int ret = 0;
+    while (!p.eof && 0 == (ret = feed_frame(p, &ctx.stream, frame_cb, &ctx))) {}
+
+    pthread_mutex_lock(&ctx.mu);
+    ctx.exit_flag |= 1;
+    ctx.l2r = ret;
+    pthread_cond_signal(&ctx.cond);
+    pthread_mutex_unlock(&ctx.mu);
+    return NULL;
+}
+
+// pty --> stdout
+static void *r2l(void *user) {
+    Context &ctx = *(Context *)user;
+    int ret = 0;
+    while (1) {
+        char output_buf[MAX_FRAME_SIZE];
+        char *buf = &output_buf[FRAME_HEADER_SIZE];
+        const size_t k_output_buf_size = MAX_FRAME_SIZE - FRAME_HEADER_SIZE;
+        int nread = TEMP_FAILURE_RETRY(read(ctx.pty_fd, buf, k_output_buf_size));
+        if (nread < 0) {
+            log_err(errno, "read(fd)");
+            ret = -1;
+            break;
+        }
+        if (nread == 0) {
+            break;
+        }
+
+        if (0 != (ret = send_data(&ctx.stream, buf, nread))) {
+            break;
+        }
+    }
+
+    pthread_mutex_lock(&ctx.mu);
+    ctx.exit_flag |= 2;
+    ctx.r2l = ret;
+    pthread_cond_signal(&ctx.cond);
+    pthread_mutex_unlock(&ctx.mu);
+    return NULL;
+}
 
 int main(int argc, char *const *argv) {
     // parse args
@@ -91,48 +141,35 @@ int main(int argc, char *const *argv) {
         (void)write(STDOUT_FILENO, k_greeting, strlen(k_greeting));
     }
 
-    Stream s;
-    s.rfd = STDIN_FILENO;
-    s.wfd = STDOUT_FILENO;
-    s.base64 = arg_base64;
+    // init stream
+    ctx.stream.rfd = STDIN_FILENO;
+    ctx.stream.wfd = STDOUT_FILENO;
+    ctx.stream.base64 = arg_base64;
 
-    Parser p;
-    while (!p.eof) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(ctx.pty_fd, &fds);
-        FD_SET(STDIN_FILENO, &fds);
-
-        if (TEMP_FAILURE_RETRY(select(ctx.pty_fd + 1, &fds, NULL, NULL, NULL)) == -1) {
-            log_err(errno, "select()");
-            return -1;
-        }
-
-        // stdin --> pty
-        if (FD_ISSET(STDIN_FILENO, &fds)) {
-            if (0 != feed_frame(p, &s, frame_cb, &ctx)) {
-                return -1;
-            }
-        }
-
-        // pty --> stdout
-        if (FD_ISSET(ctx.pty_fd, &fds)) {
-            char output_buf[MAX_FRAME_SIZE];
-            char *buf = &output_buf[FRAME_HEADER_SIZE];
-            const size_t k_output_buf_size = MAX_FRAME_SIZE - FRAME_HEADER_SIZE;
-            int nread = TEMP_FAILURE_RETRY(read(ctx.pty_fd, buf, k_output_buf_size));
-            if (nread < 0) {
-                log_err(errno, "read(fd)");
-                return -1;
-            }
-            if (nread == 0) {
-                break;
-            }
-
-            if (0 != send_data(&s, buf, nread)) {
-                return -1;
-            }
-        }
+    // start threads
+    pthread_attr_t attr;
+    if (0 != pthread_attr_init(&attr)) {
+        log_err(errno, "pthread_attr_init()");
+        return -1;
     }
-    return 0;
+    (void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t thread_l2r;
+    pthread_t thread_r2l;
+    if (0 != pthread_create(&thread_l2r, &attr, &l2r, &ctx)) {
+        log_err(errno, "pthread_create(&thread_l2r, &attr, &l2r, &ctx)");
+        return -1;
+    }
+    if (0 != pthread_create(&thread_r2l, &attr, &r2l, &ctx)) {
+        log_err(errno, "pthread_create(&thread_r2l, &attr, &r2l, &ctx)");
+        return -1;
+    }
+
+    // wait for threads
+    pthread_mutex_lock(&ctx.mu);
+    while (!ctx.exit_flag) {
+        pthread_cond_wait(&ctx.cond, &ctx.mu);
+    }
+    log_dbg("[exit_flag:%d] [l2r:%d][r2l:%d]", ctx.exit_flag, ctx.l2r, ctx.r2l);
+    pthread_mutex_unlock(&ctx.mu);
+    return ctx.l2r ? ctx.l2r : ctx.r2l;
 }

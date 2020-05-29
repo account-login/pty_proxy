@@ -3,10 +3,10 @@ import glob
 
 
 CXX = 'g++'
-CXXFLAGS = '-Wall -Wextra -g -fdiagnostics-color=always'.split()
+CXXFLAGS = '-Wall -Wextra -g -pthread -fdiagnostics-color=always'.split()
 CXXFLAGS += '-Os'.split()
 LD = 'g++'
-LD_FLAGS = '-s'.split()
+LD_FLAGS = '-s -pthread'.split()
 
 
 def o(file):
