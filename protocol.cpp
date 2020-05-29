@@ -35,6 +35,7 @@ ssize_t stream_read(Stream *s, void *buf, size_t bufsize) {
     assert(insize <= s->buflen && outsize <= bufsize);
     memmove(s->rbuf, &s->rbuf[insize], s->buflen - insize);
     s->buflen -= insize;
+    log_dbg("[stream_read] [insize:%zu][outsize:%zu] [remain:%zu]", insize, outsize, s->buflen);
 
     return (ssize_t)outsize;
 }
@@ -124,7 +125,7 @@ int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user) 
     size_t buf_end = p.buf_pos + (size_t)nread;
     while (p.buf_pos < buf_end) {
         if (p.buf_pos + FRAME_HEADER_SIZE > buf_end) {
-            log_dbg("[read_frame] not enough header [nread:%zd]", nread);
+            log_dbg("[feed_frame] not enough header [nread:%zd]", nread);
             break;
         }
         const uint8_t *data = &p.input_buf[p.buf_pos];
@@ -132,13 +133,17 @@ int feed_frame(Parser &p, Stream *s, int cb(Parser &p, void *user), void *user) 
         uint8_t cmd = data[2];
         (void)data[3];
         const uint8_t *payload = data + FRAME_HEADER_SIZE;
+        if (FRAME_HEADER_SIZE + size > MAX_FRAME_SIZE) {
+            log_err(0, "[feed_frame] frame too large [size:%zu][cmd:%u] [remain:%zu]", size, cmd, buf_end - p.buf_pos);
+            return -1;
+        }
         if (p.buf_pos + FRAME_HEADER_SIZE + size > buf_end) {
-            log_dbg("[read_frame] not enough payload [nread:%zd] [cmd:%u][size:%zu]", cmd, nread, size);
+            log_dbg("[feed_frame] not enough payload [nread:%zd] [cmd:%u][size:%zu]", nread, cmd, size);
             break;
         }
 
         // output
-        log_dbg("[feed_frame] [size:%zu][cmd:%u]", size, cmd);
+        log_dbg("[feed_frame] [size:%zu][cmd:%u] [pos:%zu]", size, cmd, p.buf_pos);
         p.size = size;
         p.cmd = cmd;
         p.payload = payload;

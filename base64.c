@@ -88,8 +88,9 @@ int b64_decode(const uint8_t *inbuf, size_t *insize, uint8_t *outbuf, size_t *ou
             break;
         }
         if (b == 0xff || c == 0xff || d == 0xff) {
-            // missing padding
-            return -1;
+            // incomplete input
+            inbuf = in_save;
+            break;
         }
         if (a == 0xfe || b == 0xfe) {
             // unexpected padding
