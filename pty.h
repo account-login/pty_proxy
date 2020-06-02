@@ -14,7 +14,7 @@
 
 int pty_master_open(int &fd, std::string &slave_name);
 int pty_fork(
-    pid_t &pid, int &fd, std::string &slave_name,
+    pid_t &pid, int &fd,
     const struct termios *slave_termios, const struct winsize *slave_ws
 );
 int tty_set_cbreak(int fd, struct termios *prev);

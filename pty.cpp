@@ -47,12 +47,13 @@ L_RETURN:
 
 // http://www.man7.org/tlpi/code/online/book/pty/pty_fork.c.html
 int pty_fork(
-    pid_t &pid, int &fd, std::string &slave_name,
+    pid_t &pid, int &fd,
     const struct termios *slave_termios, const struct winsize *slave_ws)
 {
     int err = 0;
     pid = -1;
 
+    std::string slave_name;
     if ((err = pty_master_open(fd, slave_name))) {
         log_err(err, "pty_master_open()");
         return err;

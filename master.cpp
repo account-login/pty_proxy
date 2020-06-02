@@ -11,6 +11,7 @@
 
 
 struct Context {
+    int no_tty = 0;
     pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
     int exit_flag = 0;
@@ -40,6 +41,11 @@ static int frame_cb(Parser &p, void *user) {
             log_err(errno, "write(STDOUT_FILENO, p.payload, p.size)");
             return -1;
         }
+    } else if (p.cmd == CMD_ERR) {
+        if (TEMP_FAILURE_RETRY(write(STDERR_FILENO, p.payload, p.size)) != (ssize_t)p.size) {
+            log_err(errno, "write(STDERR_FILENO, p.payload, p.size)");
+            return -1;
+        }
     } else if (p.cmd == CMD_EOF) {
         log_dbg("[frame_cb] EOF msg received");
         ctx.msg_eof = 1;
@@ -56,23 +62,25 @@ static void *l2r(void *user) {
     Context &ctx = *(Context *)user;
     int ret = 0;
 
-    // unblock sigwinch for me
-    sigset_t sigset;
-    sigemptyset(&sigset);
-    sigaddset(&sigset, SIGWINCH);
-    if (0 != pthread_sigmask(SIG_UNBLOCK, &sigset, NULL)) {
-        log_err(errno, "pthread_sigmask(SIG_UNBLOCK, &sigset, NULL)");
+    if (!ctx.no_tty) {
+        // unblock sigwinch for me
+        sigset_t sigset;
+        sigemptyset(&sigset);
+        sigaddset(&sigset, SIGWINCH);
+        if (0 != pthread_sigmask(SIG_UNBLOCK, &sigset, NULL)) {
+            log_err(errno, "pthread_sigmask(SIG_UNBLOCK, &sigset, NULL)");
+        }
+        // setup sigwinch
+        struct sigaction sa = {};
+        sa.sa_handler = &set_winch;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        (void)sigaction(SIGWINCH, &sa, NULL);
     }
-    // setup sigwich
-    struct sigaction sa = {};
-    sa.sa_handler = &set_winch;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    (void)sigaction(SIGWINCH, &sa, NULL);
 
     while (1) {
         // sigwinch
-        if (g_winch) {
+        if (!ctx.no_tty && g_winch) {
             g_winch = 0;
             struct winsize ws = {};
             if (0 != (ret = ioctl(STDIN_FILENO, TIOCGWINSZ, &ws))) {
@@ -91,7 +99,7 @@ static void *l2r(void *user) {
         ssize_t nread = read(STDIN_FILENO, buf, k_buf_size);
         if (nread < 0) {
             if (errno == EINTR) {
-                log_dbg("got EINTR, winch: %d", g_winch);
+                log_dbg("got EINTR, sigwinch: %d", g_winch);
                 continue;   // maybe sigwinch
             }
 
@@ -103,7 +111,7 @@ static void *l2r(void *user) {
             break;
         }
 
-        if (0 != (ret = send_data(&ctx.stream, buf, nread))) {
+        if (0 != (ret = send_payload(&ctx.stream, CMD_DATA, buf, nread))) {
             break;
         }
     }
@@ -134,9 +142,11 @@ static void *r2l(void *user) {
 int main(int argc, char *const *argv) {
     // parse args
     int arg_base64 = 0;
+    int arg_no_tty = 0;
     struct option long_options[] = {
         /* These options set a flag. */
         {"base64", no_argument, &arg_base64, 1},
+        {"no-tty", no_argument, &arg_no_tty, 1},
         {0, 0, 0, 0}
     };
 
@@ -198,30 +208,33 @@ int main(int argc, char *const *argv) {
     (void)close(child_r);
     (void)close(child_w);
 
-    // block sigwinch for all threads
-    sigset_t sigset;
-    sigemptyset(&sigset);
-    sigaddset(&sigset, SIGWINCH);
-    if (0 != pthread_sigmask(SIG_BLOCK, &sigset, NULL)) {
-        log_err(errno, "pthread_sigmask(SIG_BLOCK, &sigset, NULL)");
-        return -1;
-    }
+    if (!arg_no_tty) {
+        // block sigwinch for all threads
+        sigset_t sigset;
+        sigemptyset(&sigset);
+        sigaddset(&sigset, SIGWINCH);
+        if (0 != pthread_sigmask(SIG_BLOCK, &sigset, NULL)) {
+            log_err(errno, "pthread_sigmask(SIG_BLOCK, &sigset, NULL)");
+            return -1;
+        }
 
-    // reset tty on exit
-    if (atexit(tty_reset) != 0) {
-        log_err(errno, "atexit(tty_reset)");
-        return -1;
-    }
+        // reset tty on exit
+        if (atexit(tty_reset) != 0) {
+            log_err(errno, "atexit(tty_reset)");
+            return -1;
+        }
 
-    // Place terminal in raw mode so that we can pass all terminal
-    // input to the pseudoterminal master untouched
-    if (int err = tty_set_raw(STDIN_FILENO, &g_tty_orig)) {
-        log_err(err, "tty_set_raw(STDIN_FILENO)");
-        return -1;
+        // Place terminal in raw mode so that we can pass all terminal
+        // input to the pseudoterminal master untouched
+        if (int err = tty_set_raw(STDIN_FILENO, &g_tty_orig)) {
+            log_err(err, "tty_set_raw(STDIN_FILENO)");
+            return -1;
+        }
     }
 
     // init ctx
     Context ctx;
+    ctx.no_tty = arg_no_tty;
     ctx.stream.rfd = parent_r;
     ctx.stream.wfd = parent_w;
     ctx.stream.base64 = arg_base64;
@@ -233,14 +246,13 @@ int main(int argc, char *const *argv) {
         return -1;
     }
     (void)pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_t thread_l2r;
-    pthread_t thread_r2l;
-    if (0 != pthread_create(&thread_l2r, &attr, &l2r, &ctx)) {
-        log_err(errno, "pthread_create(&thread_l2r, &attr, &l2r, &ctx)");
+    pthread_t thread_id;
+    if (0 != pthread_create(&thread_id, &attr, &l2r, &ctx)) {
+        log_err(errno, "pthread_create(&thread_id, &attr, &l2r, &ctx)");
         return -1;
     }
-    if (0 != pthread_create(&thread_r2l, &attr, &r2l, &ctx)) {
-        log_err(errno, "pthread_create(&thread_r2l, &attr, &r2l, &ctx)");
+    if (0 != pthread_create(&thread_id, &attr, &r2l, &ctx)) {
+        log_err(errno, "pthread_create(&thread_id, &attr, &r2l, &ctx)");
         return -1;
     }
 

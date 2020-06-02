@@ -92,19 +92,19 @@ int send_ws(Stream *s, const struct winsize &ws) {
     return 0;
 }
 
-int send_data(Stream *s, const char *buf, size_t len) {
+int send_payload(Stream *s, uint8_t cmd, const char *buf, size_t len) {
     assert(0 < len && len + FRAME_HEADER_SIZE <= MAX_FRAME_SIZE);
-    log_dbg("[send_data] [seq:%u][len:%zu]", g_send_seq, len);
+    log_dbg("[send_payload] [seq:%u][len:%zu]", g_send_seq, len);
 
     char *head = (char *)(buf - FRAME_HEADER_SIZE);
     head[0] = (uint8_t)(len & 0xff);
     head[1] = (uint8_t)(len >> 8);
-    head[2] = CMD_DATA;
+    head[2] = cmd;
     head[3] = g_send_seq++;
 
     size_t write_len = FRAME_HEADER_SIZE + len;
     if (stream_write(s, head, write_len) != (ssize_t)write_len) {
-        log_err(errno, "send_data()");
+        log_err(errno, "send_payload()");
         return -1;
     }
     return 0;
