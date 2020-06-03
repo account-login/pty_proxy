@@ -1,4 +1,5 @@
 // system
+#include <assert.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -27,6 +28,7 @@ static char g_proc_name[1024 * 4] = {};
 
 
 static const char *get_process_name() {
+    // FIXME: thread unsafe
     if (g_proc_name[0] == '\0') {
         const char *val = _get_process_name(g_proc_name, sizeof(g_proc_name));
         strcpy(g_proc_name, val);
@@ -34,19 +36,42 @@ static const char *get_process_name() {
     return g_proc_name;
 }
 
+static void do_vlog(int errnum, const char *fmt, va_list args) {
+    char buf[4096];
+    char *cur = &buf[0];
+    char *end = cur + sizeof(buf);
+    int n = snprintf(cur, end - cur, "[%s:%u]", get_process_name(), getpid());
+    assert(n > 0);
+    cur += n;
 
-void log_err(int errnum, const char *fmt, ...) {
-    fprintf(stderr, "[%s:%u] ", get_process_name(), getpid());
-
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
-    va_end(args);
-    if (errnum != 0) {
-        fprintf(stderr, " [errno:%d] %s", errnum, strerror(errnum));
+    if (cur < end) {
+        n = vsnprintf(cur, end - cur, fmt, args);
+        if (n < 0) {
+            return;
+        }
+        cur += n;
     }
 
-    fputs("\r\n", stderr);
+    if (errnum != 0 && cur < end) {
+        // FIXME: thread unsafe
+        n = snprintf(cur, end - cur, " [errno:%d] %s", errnum, strerror(errnum));
+        assert(n > 0);
+        cur += n;
+    }
+    if (cur > end - 2) {
+        cur = end - 2;
+    }
+    cur[0] = '\r';
+    cur[1] = '\n';
+
+    (void)write(2, buf, cur - buf + 2);
+}
+
+void log_err(int errnum, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    do_vlog(errnum, fmt, args);
+    va_end(args);
 }
 
 static int g_is_debug = -1;
@@ -60,12 +85,8 @@ void log_dbg(const char *fmt, ...) {
         return;
     }
 
-    fprintf(stderr, "[%s:%u] ", get_process_name(), getpid());
-
     va_list args;
     va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
+    do_vlog(0, fmt, args);
     va_end(args);
-
-    fputs("\r\n", stderr);
 }
