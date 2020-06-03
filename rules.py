@@ -6,7 +6,7 @@ CXX = 'g++'
 CXXFLAGS = '-Wall -Wextra -g -pthread -fdiagnostics-color=always'.split()
 CXXFLAGS += '-Os'.split()
 LD = 'g++'
-LD_FLAGS = '-s -pthread'.split()
+LD_FLAGS = (os.environ.get("LD_FLAGS", "") + ' -s -pthread').split()
 
 
 def o(file):

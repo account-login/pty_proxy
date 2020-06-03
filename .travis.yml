@@ -1,0 +1,16 @@
+language: c++
+os: linux
+
+services:
+  - docker
+
+script:
+  - docker run -v $PWD:/root/proj alpine /bin/sh /root/proj/.travis.sh
+
+deploy:
+  provider: releases
+  api_key: $GH_API_KEY
+  file_glob: true
+  file: pty_proxy_*
+  skip_cleanup: true
+  draft: true
