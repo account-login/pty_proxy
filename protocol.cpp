@@ -117,6 +117,7 @@ int send_eof(Stream *s) {
     buf[2] = CMD_EOF;
     buf[3] = g_send_seq++;
 
+    log_dbg("send CMD_EOF");
     if (stream_write(s, buf, sizeof(buf)) != sizeof(buf)) {
         log_err(errno, "send_eof()");
         return -1;

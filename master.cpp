@@ -108,6 +108,7 @@ static void *l2r(void *user) {
             break;
         }
         if (nread == 0) {
+            (void)send_eof(&ctx.stream);
             break;
         }
 
@@ -256,9 +257,9 @@ int main(int argc, char *const *argv) {
         return -1;
     }
 
-    // wait for threads
+    // wait for remote exit
     pthread_mutex_lock(&ctx.mu);
-    while (!ctx.exit_flag) {
+    while (!(ctx.exit_flag & 2)) {
         pthread_cond_wait(&ctx.cond, &ctx.mu);
     }
     log_dbg("[exit_flag:%d] [l2r:%d][r2l:%d]", ctx.exit_flag, ctx.l2r, ctx.r2l);

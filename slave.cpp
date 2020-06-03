@@ -21,6 +21,7 @@ struct Context {
     int exit_flag = 0;
     int l2r = 0;
     int r2l = 0;
+    int msg_eof = 0;
     Stream stream;
 };
 
@@ -28,12 +29,28 @@ struct Context {
 static int frame_cb(Parser &p, void *user) {
     Context &ctx = *(Context *)user;
 
+    if (ctx.msg_eof) {
+        log_err(0, "got msg after CMD_EOF");
+        return 0;
+    }
+
     if (p.cmd == CMD_DATA) {
         int wfd = ctx.no_tty ? ctx.child_in : ctx.pty_fd;
         if (TEMP_FAILURE_RETRY(write(wfd, p.payload, p.size)) != (ssize_t)p.size) {
             log_err(errno, "write(wfd, p.payload, p.size)");
             return -1;
         }
+    } else if (p.cmd == CMD_EOF) {
+        log_dbg("[frame_cb] EOF msg received");
+        if (ctx.no_tty) {
+            (void)close(ctx.child_in);
+        } else {
+            // ctrl+d
+            // NOTE: not working if sending EOF too early
+            (void)write(ctx.pty_fd, "\x04", 1);
+        }
+        ctx.msg_eof = 1;
+        return 0;
     } else if (p.cmd == CMD_WS) {
         if (p.size < 4) {
             log_err(0, "CMD_WS [size:%zu] < 4", p.size);
@@ -66,7 +83,7 @@ static void *l2r(void *user) {
     Context &ctx = *(Context *)user;
     Parser p;
     int ret = 0;
-    while (!p.eof && 0 == (ret = feed_frame(p, &ctx.stream, frame_cb, &ctx))) {}
+    while (!p.eof && !ctx.msg_eof && 0 == (ret = feed_frame(p, &ctx.stream, frame_cb, &ctx))) {}
 
     pthread_mutex_lock(&ctx.mu);
     ctx.exit_flag |= 1;
@@ -299,9 +316,9 @@ int main(int argc, char *const *argv) {
         }
     }
 
-    // wait for threads
+    // wait for remote exit
     pthread_mutex_lock(&ctx.mu);
-    while (!ctx.exit_flag) {
+    while (!(ctx.exit_flag & 2)) {
         pthread_cond_wait(&ctx.cond, &ctx.mu);
     }
     log_dbg("[exit_flag:%d] [l2r:%d][r2l:%d]", ctx.exit_flag, ctx.l2r, ctx.r2l);
