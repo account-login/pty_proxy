@@ -156,7 +156,7 @@ int main(int argc, char *const *argv) {
     int slave_cmd_argc = argc - optind;
     char *const *slave_cmd_argv = &argv[optind];
     if (slave_cmd_argc < 1) {
-        log_err(0, "usage: pty_proxy_master [--base64] -- SLAVE_CMD ARGS...");
+        log_err(0, "usage: pty_proxy_master [--base64] [--no-tty] -- SLAVE_CMD ARGS...");
         return 1;
     }
 

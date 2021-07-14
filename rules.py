@@ -1,9 +1,8 @@
 import os
-import glob
 
 
 CXX = 'g++'
-CXXFLAGS = '-Wall -Wextra -g -pthread -fdiagnostics-color=always'.split()
+CXXFLAGS = '-Wall -Wextra -g -pthread'.split()
 CXXFLAGS += '-Os'.split()
 LD = 'g++'
 LD_FLAGS = (os.environ.get("LD_FLAGS", "") + ' -s -pthread').split()
